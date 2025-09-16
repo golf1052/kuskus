@@ -5,8 +5,8 @@
 
 import * as path from "path";
 import { workspace, ExtensionContext, commands, window } from "vscode";
-import * as clipboardy from "clipboardy";
-import * as open from "open";
+import clipboardy from "clipboardy";
+import open from "open";
 
 import {
   LanguageClient,
@@ -90,7 +90,7 @@ export function activate(context: ExtensionContext) {
           try {
             clipboardy.writeSync(verificationCode);
             clipboardWriteSucceeded = true;
-          } catch (e) {
+          } catch {
             window.showErrorMessage(
               "Failed to write login code to clipboard -- This is expected in a remote connection, e.g. a Github codespace.",
             );
@@ -101,7 +101,7 @@ export function activate(context: ExtensionContext) {
 
           try {
             open(verificationUrl);
-          } catch (e) {
+          } catch {
             window.showErrorMessage(
               `Failed to open the login URL ${verificationUrl} -- This is expected in a remote connection, e.g. a Github codespace. Navigate to the URL manually.`,
             );
