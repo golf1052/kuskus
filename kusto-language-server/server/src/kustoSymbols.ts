@@ -1,4 +1,4 @@
-import KustoClient from "azure-kusto-data/types/src/client";
+import { Client as KustoClient } from "azure-kusto-data";
 
 interface DatabaseMetadata {
   DatabaseName: string;

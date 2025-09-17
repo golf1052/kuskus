@@ -1,5 +1,5 @@
-import "../node_modules/@kusto/language-service-next/bridge";
-import "../node_modules/@kusto/language-service-next/Kusto.Language.Bridge";
+import "@kusto/language-service-next/bridge.js";
+import "@kusto/language-service-next/Kusto.Language.Bridge.js";
 
 import {
   createConnection,
@@ -22,10 +22,10 @@ import {
   getClient as getKustoClient,
   TokenResponse,
   getFirstOrDefaultClient,
-} from "./kustoConnection";
-import { getSymbolsOnCluster, getSymbolsOnTable } from "./kustoSymbols";
-import { formatCodeScript } from "./kustoFormat";
-import { getVSCodeCompletionItemsAtPosition } from "./kustoCompletion";
+} from "./kustoConnection.js";
+import { getSymbolsOnCluster, getSymbolsOnTable } from "./kustoSymbols.js";
+import { formatCodeScript } from "./kustoFormat.js";
+import { getVSCodeCompletionItemsAtPosition } from "./kustoCompletion.js";
 
 // Create a connection for the server. The connection uses Node's IPC as a transport.
 // Also include all preview / proposed LSP features.

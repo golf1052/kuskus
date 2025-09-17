@@ -1,5 +1,7 @@
-import { default as Client } from "azure-kusto-data/types/src/client";
-import KustoConnectionStringBuilder from "azure-kusto-data/types/src/connectionBuilder";
+import {
+  Client as KustoClient,
+  KustoConnectionStringBuilder,
+} from "azure-kusto-data";
 
 export interface TokenResponse {
   verificationUrl: string;
@@ -8,7 +10,7 @@ export interface TokenResponse {
 
 // Resource string to kusto client. The azure-kusto-data package
 // does not have typescript support.
-const clients: Map<string, Client> = new Map();
+const clients: Map<string, KustoClient> = new Map();
 
 export function getClient(
   clusterUri: string,
@@ -18,6 +20,10 @@ export function getClient(
   if (clients.has(clusterUri)) {
     return clients.get(clusterUri)!;
   } else {
+    const kc = KustoConnectionStringBuilder.withUserPrompt(clusterUri);
+    const c = new KustoClient(kc);
+    clients.set(clusterUri, c);
+    return c;
     // If tenant id is empty in the input, consider it undefined when building the connection string
     if (!tenantId) {
       tenantId = undefined;
@@ -33,7 +39,7 @@ export function getClient(
         });
       },
     );
-    const kustoClient = new Client(kcsb);
+    const kustoClient = new KustoClient(kcsb);
     clients.set(clusterUri, kustoClient);
     return kustoClient;
   }
@@ -41,7 +47,7 @@ export function getClient(
 
 export function getFirstOrDefaultClient(): {
   clusterUri: string;
-  kustoClient: Client | null;
+  kustoClient: KustoClient | null;
 } {
   if (clients.size > 0) {
     const key = clients.keys().next().value;
