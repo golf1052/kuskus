@@ -275,6 +275,39 @@
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "set_active_database",
+                "displayName": "Set active Kusto database",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "kuskus-set-active-database",
+                "icon": "resources/kusto-logo-new-2.svg",
+                "userDescription": "Switch the active Kusto cluster and database",
+                "modelDescription": "Switch the active Kusto cluster and database that subsequent tools (run_kusto_query, list_tables, get_table_schema) run against. Use this to investigate across different clusters or databases. Input should be a JSON object with a 'clusterUri' property (the full cluster URI, e.g. 'https://help.kusto.windows.net') and a 'databaseName' property. The cluster must already be connected in the Kusto Explorer panel (use list_clusters to discover connected clusters and list_databases to discover database names). The database name is matched case-insensitively. Output is a JSON object with 'success', 'clusterUri', and the canonical 'databaseName'. Returns an error if the cluster is not connected or the database does not exist.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "clusterUri": {
+                            "type": "string",
+                            "description": "The full URI of the connected Kusto cluster to switch to (e.g. 'https://help.kusto.windows.net')"
+                        },
+                        "databaseName": {
+                            "type": "string",
+                            "description": "The name of the database on that cluster to make active"
+                        }
+                    },
+                    "required": ["clusterUri", "databaseName"]
+                },
+                "when": "kuskus.hasConnectedClusters"
+            },
+            {
+                "name": "get_active_database",
+                "displayName": "Get active Kusto database",
+                "canBeReferencedInPrompt": true,
+                "toolReferenceName": "kuskus-get-active-database",
+                "icon": "resources/kusto-logo-new-2.svg",
+                "userDescription": "Get the currently active Kusto cluster and database",
+                "modelDescription": "Get the currently active Kusto cluster and database that queries and schema lookups run against. Takes no input parameters. Output is a JSON object with 'active' (boolean). When active is true it also includes 'clusterUri' and 'databaseName'. When active is false, no database is currently selected. Use this to discover the current workspace connection context before running queries or before switching databases with set_active_database."
             }
         ],
         "viewsContainers": {

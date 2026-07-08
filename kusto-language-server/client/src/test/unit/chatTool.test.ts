@@ -72,9 +72,12 @@ import {
   GetTableSchemaTool,
   SearchQueryResultsTool,
   ListClustersTool,
+  SetActiveDatabaseTool,
+  GetActiveDatabaseTool,
   type ClusterConnectionAccessor,
   type ResultsDisplayAccessor,
   type QueryResultsStoreAccessor,
+  type ActiveDatabaseSwitcher,
 } from "../../chatTool.js";
 import { KustoQueryContentProvider } from "../../queryDocumentProvider.js";
 import { type CancellationToken } from "vscode";
@@ -99,6 +102,19 @@ function makeResultsDisplay(): ResultsDisplayAccessor {
 
 function makeQueryDocProvider(): KustoQueryContentProvider {
   return new KustoQueryContentProvider();
+}
+
+function makeSwitcher(
+  overrides: Partial<ActiveDatabaseSwitcher> = {},
+): ActiveDatabaseSwitcher {
+  return {
+    getClient: overrides.getClient ?? (() => undefined),
+    getConnectedClusterUris: overrides.getConnectedClusterUris ?? (() => []),
+    activeClusterUri: overrides.activeClusterUri ?? undefined,
+    activeDatabaseName: overrides.activeDatabaseName ?? undefined,
+    applyActiveDatabase:
+      overrides.applyActiveDatabase ?? (async () => undefined),
+  };
 }
 
 function makeResultsStore(
@@ -1075,6 +1091,170 @@ describe("ListClustersTool", () => {
       );
       expect(parsed[0].isActive).toBe(false);
       expect(parsed[0].activeDatabaseName).toBeUndefined();
+    });
+  });
+});
+
+function makeDatabasesClient(names: string[]) {
+  return {
+    execute: vi.fn().mockResolvedValue({
+      primaryResults: [
+        {
+          rows: function* () {
+            for (const name of names) {
+              yield { DatabaseName: name };
+            }
+          },
+        },
+      ],
+    }),
+  };
+}
+
+describe("SetActiveDatabaseTool", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe("prepareInvocation", () => {
+    it("should return confirmation message with cluster and database", async () => {
+      const tool = new SetActiveDatabaseTool(makeSwitcher());
+
+      const result = await tool.prepareInvocation(
+        {
+          input: {
+            clusterUri: "https://test.kusto.windows.net",
+            databaseName: "mydb",
+          },
+        } as never,
+        dummyToken,
+      );
+
+      expect(result.invocationMessage).toBe(
+        "Switching active database to mydb",
+      );
+      expect(result.confirmationMessages).toBeDefined();
+    });
+  });
+
+  describe("invoke", () => {
+    it("should switch to the requested database and return canonical name", async () => {
+      const mockClient = makeDatabasesClient(["MyDb", "OtherDb"]);
+      const applyActiveDatabase = vi.fn().mockResolvedValue(undefined);
+      const switcher = makeSwitcher({
+        getClient: () => mockClient as never,
+        applyActiveDatabase,
+      });
+      const tool = new SetActiveDatabaseTool(switcher);
+
+      const result = await tool.invoke(
+        {
+          input: {
+            clusterUri: "https://test.kusto.windows.net",
+            databaseName: "mydb",
+          },
+        } as never,
+        dummyToken,
+      );
+
+      // Canonical name resolved case-insensitively.
+      expect(applyActiveDatabase).toHaveBeenCalledWith(
+        "https://test.kusto.windows.net",
+        "MyDb",
+      );
+
+      const parsed = JSON.parse(
+        (result as unknown as { parts: { value: string }[] }).parts[0].value,
+      );
+      expect(parsed).toEqual({
+        success: true,
+        clusterUri: "https://test.kusto.windows.net",
+        databaseName: "MyDb",
+      });
+    });
+
+    it("should throw when the cluster is not connected", async () => {
+      const applyActiveDatabase = vi.fn();
+      const switcher = makeSwitcher({
+        getClient: () => undefined,
+        getConnectedClusterUris: () => ["https://other.kusto.windows.net"],
+        applyActiveDatabase,
+      });
+      const tool = new SetActiveDatabaseTool(switcher);
+
+      await expect(
+        tool.invoke(
+          {
+            input: {
+              clusterUri: "https://test.kusto.windows.net",
+              databaseName: "mydb",
+            },
+          } as never,
+          dummyToken,
+        ),
+      ).rejects.toThrow(/not connected/);
+      expect(applyActiveDatabase).not.toHaveBeenCalled();
+    });
+
+    it("should throw when the database does not exist on the cluster", async () => {
+      const mockClient = makeDatabasesClient(["OtherDb"]);
+      const applyActiveDatabase = vi.fn();
+      const switcher = makeSwitcher({
+        getClient: () => mockClient as never,
+        applyActiveDatabase,
+      });
+      const tool = new SetActiveDatabaseTool(switcher);
+
+      await expect(
+        tool.invoke(
+          {
+            input: {
+              clusterUri: "https://test.kusto.windows.net",
+              databaseName: "missing",
+            },
+          } as never,
+          dummyToken,
+        ),
+      ).rejects.toThrow(/was not found/);
+      expect(applyActiveDatabase).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("GetActiveDatabaseTool", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe("invoke", () => {
+    it("should return the active cluster and database when set", async () => {
+      const switcher = makeSwitcher({
+        activeClusterUri: "https://test.kusto.windows.net",
+        activeDatabaseName: "mydb",
+      });
+      const tool = new GetActiveDatabaseTool(switcher);
+
+      const result = await tool.invoke({ input: {} } as never, dummyToken);
+
+      const parsed = JSON.parse(
+        (result as unknown as { parts: { value: string }[] }).parts[0].value,
+      );
+      expect(parsed).toEqual({
+        active: true,
+        clusterUri: "https://test.kusto.windows.net",
+        databaseName: "mydb",
+      });
+    });
+
+    it("should report inactive when no database is set", async () => {
+      const tool = new GetActiveDatabaseTool(makeSwitcher());
+
+      const result = await tool.invoke({ input: {} } as never, dummyToken);
+
+      const parsed = JSON.parse(
+        (result as unknown as { parts: { value: string }[] }).parts[0].value,
+      );
+      expect(parsed).toEqual({ active: false });
     });
   });
 });

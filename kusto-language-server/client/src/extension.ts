@@ -46,6 +46,8 @@ import {
   SearchQueryResultsTool,
   ListClustersTool,
   GetChartImageTool,
+  SetActiveDatabaseTool,
+  GetActiveDatabaseTool,
 } from "./chatTool.js";
 import { KustoQueryContentProvider } from "./queryDocumentProvider.js";
 import { QueryResultsStore } from "./queryResultsStore.js";
@@ -495,42 +497,74 @@ export async function activate(context: ExtensionContext) {
     }),
   );
 
+  // Shared logic for switching the active database. Used by both the tree-view
+  // command and the set_active_database language model tool so they stay in sync.
+  const applyActiveDatabase = async (
+    clusterUri: string,
+    databaseName: string,
+  ): Promise<void> => {
+    clusterViewProvider.setActiveDatabase(clusterUri, databaseName);
+    await saveActiveDatabase(context.globalState, clusterUri, databaseName);
+    await commands.executeCommand(
+      "setContext",
+      "kuskus.hasActiveDatabase",
+      true,
+    );
+    refreshActiveDatabaseUi();
+    window.showInformationMessage(
+      `[Kuskus] Active database set to ${databaseName}`,
+    );
+    log(`Active database set: ${clusterUri}/${databaseName}`);
+
+    // Tell the language server to load symbols for completions
+    if (microsoftAccessToken) {
+      client.sendNotification("kuskus.setActiveDatabase", {
+        clusterUri,
+        databaseName,
+        accessToken: microsoftAccessToken,
+      });
+      serverRegisteredClusters.add(clusterUri);
+    }
+  };
+
   context.subscriptions.push(
     commands.registerCommand(
       "kuskus.setActiveDatabase",
       async (item: KustoSchemaItem) => {
         if (item.type === "database" && item.databaseName) {
-          clusterViewProvider.setActiveDatabase(
-            item.clusterUri,
-            item.databaseName,
-          );
-          await saveActiveDatabase(
-            context.globalState,
-            item.clusterUri,
-            item.databaseName,
-          );
-          await commands.executeCommand(
-            "setContext",
-            "kuskus.hasActiveDatabase",
-            true,
-          );
-          refreshActiveDatabaseUi();
-          window.showInformationMessage(
-            `[Kuskus] Active database set to ${item.databaseName}`,
-          );
-          log(`Active database set: ${item.clusterUri}/${item.databaseName}`);
-
-          // Tell the language server to load symbols for completions
-          if (microsoftAccessToken) {
-            client.sendNotification("kuskus.setActiveDatabase", {
-              clusterUri: item.clusterUri,
-              databaseName: item.databaseName,
-              accessToken: microsoftAccessToken,
-            });
-            serverRegisteredClusters.add(item.clusterUri);
-          }
+          await applyActiveDatabase(item.clusterUri, item.databaseName);
         }
       },
+    ),
+  );
+
+  // Register the set_active_database Language Model Tool for AI chat. Reuses the
+  // same applyActiveDatabase logic as the tree-view command so the agent can
+  // switch the active cluster/database for cross-cluster investigations.
+  const activeDatabaseSwitcher = {
+    getClient: (uri: string) => clusterViewProvider.getClient(uri),
+    getConnectedClusterUris: () =>
+      clusterViewProvider.getConnectedClusterUris(),
+    get activeClusterUri() {
+      return clusterViewProvider.activeClusterUri;
+    },
+    get activeDatabaseName() {
+      return clusterViewProvider.activeDatabaseName;
+    },
+    applyActiveDatabase,
+  };
+  context.subscriptions.push(
+    vscode.lm.registerTool(
+      "set_active_database",
+      new SetActiveDatabaseTool(activeDatabaseSwitcher),
+    ),
+  );
+
+  // Register the get_active_database Language Model Tool for AI chat
+  context.subscriptions.push(
+    vscode.lm.registerTool(
+      "get_active_database",
+      new GetActiveDatabaseTool(activeDatabaseSwitcher),
     ),
   );
 

@@ -25,6 +25,11 @@ export interface ISearchQueryResultsParameters {
   searchText: string;
 }
 
+export interface ISetActiveDatabaseParameters {
+  clusterUri: string;
+  databaseName: string;
+}
+
 export interface ClusterConnectionAccessor {
   getActiveClient(): KustoClient | undefined;
   getClient(clusterUri: string): KustoClient | undefined;
@@ -43,6 +48,14 @@ export interface ResultsDisplayAccessor {
 
 export interface ChartCaptureAccessor {
   captureChart(): Promise<string | undefined>;
+}
+
+export interface ActiveDatabaseSwitcher {
+  getClient(clusterUri: string): KustoClient | undefined;
+  getConnectedClusterUris(): string[];
+  activeClusterUri: string | undefined;
+  activeDatabaseName: string | undefined;
+  applyActiveDatabase(clusterUri: string, databaseName: string): Promise<void>;
 }
 
 export interface QueryResultsStoreAccessor {
@@ -508,6 +521,129 @@ export class GetChartImageTool
     };
 
     log(`[LM Tool] Chart image captured (${dataUrl.length} chars)`);
+
+    return new vscode.LanguageModelToolResult([
+      new vscode.LanguageModelTextPart(JSON.stringify(payload)),
+    ]);
+  }
+}
+
+export class SetActiveDatabaseTool
+  implements vscode.LanguageModelTool<ISetActiveDatabaseParameters>
+{
+  constructor(private readonly connection: ActiveDatabaseSwitcher) {}
+
+  async prepareInvocation(
+    options: vscode.LanguageModelToolInvocationPrepareOptions<ISetActiveDatabaseParameters>,
+    _token: vscode.CancellationToken,
+  ) {
+    const { clusterUri, databaseName } = options.input;
+    return {
+      invocationMessage: `Switching active database to ${databaseName}`,
+      confirmationMessages: {
+        title: "Set Active Kusto Database",
+        message: new vscode.MarkdownString(
+          `Set the active database to **${clusterUri}** / **${databaseName}**? Subsequent queries and schema lookups will run against this database.`,
+        ),
+      },
+    };
+  }
+
+  async invoke(
+    options: vscode.LanguageModelToolInvocationOptions<ISetActiveDatabaseParameters>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const { clusterUri, databaseName } = options.input;
+    const client = this.connection.getClient(clusterUri);
+
+    if (!client) {
+      const connected = this.connection.getConnectedClusterUris();
+      const list =
+        connected.length > 0
+          ? `Connected clusters: ${connected.join(", ")}`
+          : "No clusters are currently connected.";
+      throw new Error(
+        `Cluster "${clusterUri}" is not connected. ${list} Ask the user to connect to the cluster first via the Kusto Explorer panel, or use the list_clusters tool to see what is available.`,
+      );
+    }
+
+    log(`[LM Tool] Setting active database to ${clusterUri}/${databaseName}`);
+
+    // Validate the database exists and resolve its canonical name.
+    const result = await client.execute("", ".show databases");
+    const available: string[] = [];
+    if (result.primaryResults.length > 0) {
+      for (const row of result.primaryResults[0].rows()) {
+        const name = row["DatabaseName"];
+        if (name) {
+          available.push(name);
+        }
+      }
+    }
+
+    const canonical = available.find(
+      (name) => name.toLowerCase() === databaseName.toLowerCase(),
+    );
+
+    if (!canonical) {
+      const list =
+        available.length > 0
+          ? `Available databases: ${available.join(", ")}`
+          : "No databases were found on this cluster.";
+      throw new Error(
+        `Database "${databaseName}" was not found on cluster "${clusterUri}". ${list} Use the list_databases tool to see valid database names.`,
+      );
+    }
+
+    await this.connection.applyActiveDatabase(clusterUri, canonical);
+
+    log(`[LM Tool] Active database is now ${clusterUri}/${canonical}`);
+
+    return new vscode.LanguageModelToolResult([
+      new vscode.LanguageModelTextPart(
+        JSON.stringify({
+          success: true,
+          clusterUri,
+          databaseName: canonical,
+        }),
+      ),
+    ]);
+  }
+}
+
+export class GetActiveDatabaseTool
+  implements vscode.LanguageModelTool<Record<string, never>>
+{
+  constructor(private readonly connection: ActiveDatabaseSwitcher) {}
+
+  async prepareInvocation(
+    _options: vscode.LanguageModelToolInvocationPrepareOptions<
+      Record<string, never>
+    >,
+    _token: vscode.CancellationToken,
+  ) {
+    return {
+      invocationMessage: "Getting the active Kusto database",
+    };
+  }
+
+  async invoke(
+    _options: vscode.LanguageModelToolInvocationOptions<Record<string, never>>,
+    _token: vscode.CancellationToken,
+  ): Promise<vscode.LanguageModelToolResult> {
+    const clusterUri = this.connection.activeClusterUri;
+    const databaseName = this.connection.activeDatabaseName;
+
+    const payload =
+      clusterUri && databaseName
+        ? { active: true, clusterUri, databaseName }
+        : { active: false };
+
+    log(
+      `[LM Tool] Active database: ${
+        payload.active ? `${clusterUri}/${databaseName}` : "none"
+      }`,
+    );
 
     return new vscode.LanguageModelToolResult([
       new vscode.LanguageModelTextPart(JSON.stringify(payload)),
