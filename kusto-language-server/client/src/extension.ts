@@ -56,7 +56,7 @@ import {
   saveClusterUris,
   saveActiveDatabase,
 } from "./persistence.js";
-import { log, logError } from "./logger.js";
+import { log, logDebug, logError } from "./logger.js";
 import { trackSync } from "./perfMetrics.js";
 import {
   getTenantIdFromToken,
@@ -64,9 +64,14 @@ import {
   withVpnHint,
 } from "./errorMessages.js";
 import { parseConnectionComment } from "./connectionComment.js";
+import {
+  getAccessToken,
+  createTokenProvider,
+  clearCachedToken,
+} from "./tokenProvider.js";
 
 let client: LanguageClient;
-let microsoftAccessToken: string | undefined; // stored access token
+let loggedIn = false; // whether the user has an active auth session
 let clusterViewProvider: ClusterViewProvider;
 let resultsPanelProvider: ResultsPanelProvider;
 let queryResultsStore: QueryResultsStore;
@@ -84,6 +89,19 @@ export async function activate(context: ExtensionContext) {
   );
   context.subscriptions.push(
     commands.registerCommand("kuskus.openInBrowser", openInBrowserHandler),
+  );
+
+  // Invalidate the cached access token when the Microsoft auth sessions change
+  // (sign out, account switch) so the next request re-authenticates.
+  context.subscriptions.push(
+    authentication.onDidChangeSessions((e) => {
+      if (e.provider.id === "microsoft") {
+        log(
+          "Microsoft authentication sessions changed; invalidating cached access token",
+        );
+        clearCachedToken("Microsoft auth sessions changed");
+      }
+    }),
   );
 
   // The server is implemented in node
@@ -125,6 +143,23 @@ export async function activate(context: ExtensionContext) {
     serverOptions,
     clientOptions,
   );
+  // Register the reverse request handler for fresh tokens BEFORE starting the
+  // client. The server pulls a token via this request whenever it builds a
+  // Kusto client (loadDatabases / setActiveDatabase / addConnection), including
+  // the setActiveDatabase notification we send during activation while
+  // restoring persisted connections — so the handler must be in place before
+  // the client starts, not gated behind the State.Running event.
+  client.onRequest("kuskus.getAccessToken", async () => {
+    logDebug("Language server requested an access token");
+    try {
+      return await getAccessToken("language server request");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logError(`Failed to provide access token to language server: ${msg}`);
+      throw err;
+    }
+  });
+
   // Start the client. This will also launch the server
   client.start();
 
@@ -401,12 +436,13 @@ export async function activate(context: ExtensionContext) {
   if (persistedState.clusterUris.length > 0) {
     // Attempt silent auth to restore connections
     await login();
-    if (microsoftAccessToken) {
+    if (loggedIn) {
+      const tokenProvider = createTokenProvider("restore persisted connections");
       for (const uri of persistedState.clusterUris) {
         clusterUris.add(uri);
         trackSync(
           "cluster.connect",
-          () => clusterViewProvider.addCluster(uri, microsoftAccessToken!),
+          () => clusterViewProvider.addCluster(uri, tokenProvider),
           { cluster: uri },
         );
       }
@@ -434,7 +470,6 @@ export async function activate(context: ExtensionContext) {
         client.sendNotification("kuskus.setActiveDatabase", {
           clusterUri: persistedState.activeClusterUri,
           databaseName: persistedState.activeDatabaseName,
-          accessToken: microsoftAccessToken,
         });
         serverRegisteredClusters.add(persistedState.activeClusterUri);
       }
@@ -443,10 +478,10 @@ export async function activate(context: ExtensionContext) {
 
   context.subscriptions.push(
     commands.registerCommand("kuskus.addConnection", async () => {
-      if (!microsoftAccessToken) {
+      if (!loggedIn) {
         await login();
       }
-      if (!microsoftAccessToken) {
+      if (!loggedIn) {
         logError("Login required before loading symbols");
         window.showErrorMessage(
           "[Kuskus] Login required before loading symbols.",
@@ -475,7 +510,10 @@ export async function activate(context: ExtensionContext) {
         trackSync(
           "cluster.connect",
           () =>
-            clusterViewProvider.addCluster(clusterUri, microsoftAccessToken!),
+            clusterViewProvider.addCluster(
+              clusterUri,
+              createTokenProvider(clusterUri),
+            ),
           { cluster: clusterUri },
         );
         await saveClusterUris(
@@ -517,11 +555,10 @@ export async function activate(context: ExtensionContext) {
     log(`Active database set: ${clusterUri}/${databaseName}`);
 
     // Tell the language server to load symbols for completions
-    if (microsoftAccessToken) {
+    if (loggedIn) {
       client.sendNotification("kuskus.setActiveDatabase", {
         clusterUri,
         databaseName,
-        accessToken: microsoftAccessToken,
       });
       serverRegisteredClusters.add(clusterUri);
     }
@@ -577,16 +614,14 @@ export async function activate(context: ExtensionContext) {
         }
         const clusterUri = item.clusterUri;
 
-        // Try with existing token first
-        if (microsoftAccessToken) {
+        // Try refreshing with token provider (auto-refreshes tokens)
+        if (loggedIn) {
           try {
+            const tokenProvider = createTokenProvider(clusterUri);
             trackSync(
               "cluster.refresh",
               () =>
-                clusterViewProvider.refreshCluster(
-                  clusterUri,
-                  microsoftAccessToken!,
-                ),
+                clusterViewProvider.refreshCluster(clusterUri, tokenProvider),
               { cluster: clusterUri },
             );
             log(`Refreshed cluster: ${clusterUri}`);
@@ -599,28 +634,23 @@ export async function activate(context: ExtensionContext) {
             });
             return;
           } catch {
-            log(
-              `Refresh with existing token failed for ${clusterUri}, re-authenticating...`,
-            );
+            log(`Refresh failed for ${clusterUri}, re-authenticating...`);
           }
         }
 
         // Re-authenticate and retry
         await login();
-        if (!microsoftAccessToken) {
+        if (!loggedIn) {
           logError("Login required to refresh cluster");
           window.showErrorMessage(
             "[Kuskus] Login required to refresh cluster.",
           );
           return;
         }
+        const tokenProvider = createTokenProvider(clusterUri);
         trackSync(
           "cluster.refresh",
-          () =>
-            clusterViewProvider.refreshCluster(
-              clusterUri,
-              microsoftAccessToken!,
-            ),
+          () => clusterViewProvider.refreshCluster(clusterUri, tokenProvider),
           { cluster: clusterUri },
         );
         log(`Refreshed cluster after re-auth: ${clusterUri}`);
@@ -705,7 +735,7 @@ async function login() {
     });
 
     if (session) {
-      microsoftAccessToken = session.accessToken;
+      loggedIn = true;
       setTenantId(getTenantIdFromToken(session.accessToken));
       log("Silently logged in with Microsoft account");
       window.showInformationMessage(
@@ -751,7 +781,7 @@ async function login() {
       window.showErrorMessage("[Kuskus] Login failed or was cancelled.");
       return;
     }
-    microsoftAccessToken = session.accessToken;
+    loggedIn = true;
     setTenantId(getTenantIdFromToken(session.accessToken));
     log("Logged in with Microsoft account");
     window.showInformationMessage("[Kuskus] Logged in with Microsoft account.");
@@ -773,7 +803,7 @@ function ensureServerClientForComment(
   if (!editor || editor.document.languageId !== "kusto") {
     return;
   }
-  if (!microsoftAccessToken) {
+  if (!loggedIn) {
     return;
   }
   const firstLine = editor.document.lineAt(0).text;
@@ -792,7 +822,6 @@ function ensureServerClientForComment(
   serverRegisteredClusters.add(clusterUri);
   client.sendRequest("kuskus.loadDatabases", {
     clusterUri,
-    accessToken: microsoftAccessToken,
   });
 }
 

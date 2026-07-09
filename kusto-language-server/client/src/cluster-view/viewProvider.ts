@@ -34,6 +34,7 @@ export class ClusterViewProvider
   > = this._onDidChangeTreeData.event;
 
   private clients: Map<string, KustoClient> = new Map();
+  private tokenProviders: Map<string, () => Promise<string>> = new Map();
   private _activeClusterUri: string | undefined;
   private _activeDatabaseName: string | undefined;
 
@@ -45,14 +46,15 @@ export class ClusterViewProvider
     return this._activeDatabaseName;
   }
 
-  public addCluster(clusterUri: string, accessToken: string) {
+  public addCluster(clusterUri: string, tokenProvider: () => Promise<string>) {
     if (!this.clients.has(clusterUri)) {
-      const kcsb = KustoConnectionStringBuilder.withAccessToken(
+      const kcsb = KustoConnectionStringBuilder.withTokenProvider(
         clusterUri,
-        accessToken,
+        tokenProvider,
       );
       const client = new KustoClient(kcsb);
       this.clients.set(clusterUri, client);
+      this.tokenProviders.set(clusterUri, tokenProvider);
       this._onDidChangeTreeData.fire();
     }
   }
@@ -63,6 +65,7 @@ export class ClusterViewProvider
       client.close();
     }
     this.clients.delete(clusterUri);
+    this.tokenProviders.delete(clusterUri);
     if (this._activeClusterUri === clusterUri) {
       this._activeClusterUri = undefined;
       this._activeDatabaseName = undefined;
@@ -82,7 +85,13 @@ export class ClusterViewProvider
 
   public getActiveClient(): KustoClient | undefined {
     if (this._activeClusterUri) {
-      return this.clients.get(this._activeClusterUri);
+      // Use getClient (exact + fuzzy match) rather than an exact-only lookup.
+      // The active cluster URI may have been set from a different source (e.g.
+      // an LM tool passing a URI with a trailing slash or different casing than
+      // the key the client was stored under), so an exact `clients.get` here
+      // would miss the client and surface a misleading "No active database
+      // selected" error at query time.
+      return this.getClient(this._activeClusterUri);
     }
     return undefined;
   }
@@ -132,13 +141,17 @@ export class ClusterViewProvider
     }
   }
 
-  public refreshCluster(clusterUri: string, accessToken: string): void {
-    const kcsb = KustoConnectionStringBuilder.withAccessToken(
+  public refreshCluster(
+    clusterUri: string,
+    tokenProvider: () => Promise<string>,
+  ): void {
+    const kcsb = KustoConnectionStringBuilder.withTokenProvider(
       clusterUri,
-      accessToken,
+      tokenProvider,
     );
     const client = new KustoClient(kcsb);
     this.clients.set(clusterUri, client);
+    this.tokenProviders.set(clusterUri, tokenProvider);
     this._onDidChangeTreeData.fire();
   }
 

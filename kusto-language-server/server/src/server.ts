@@ -19,8 +19,6 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 
 import {
-  getClient as getKustoClient,
-  TokenResponse,
   getFirstOrDefaultClient,
   newGetClient,
   getExistingClient,
@@ -55,6 +53,18 @@ type SchemaKey = string;
 const schemaCache: Map<SchemaKey, Kusto.Language.GlobalState> = new Map();
 // Track which connection key each document is using
 const documentConnectionKeys: Map<documentURI, SchemaKey> = new Map();
+
+/**
+ * Creates a token provider callback that asks the client (extension host) for
+ * a fresh access token via a reverse LSP request.  This keeps the server from
+ * holding stale static tokens.
+ */
+function createServerTokenProvider(): () => Promise<string> {
+  return async () => {
+    const token: string = await connection.sendRequest("kuskus.getAccessToken");
+    return token;
+  };
+}
 // Track in-flight schema loads to avoid duplicate requests
 const pendingSchemaLoads: Set<SchemaKey> = new Set();
 
@@ -118,8 +128,11 @@ connection.onInitialized(async () => {
 
 connection.onRequest(
   "kuskus.loadDatabases",
-  async ({ clusterUri, accessToken }) => {
-    const kustoClient = await newGetClient(clusterUri, accessToken);
+  async ({ clusterUri }: { clusterUri: string }) => {
+    const kustoClient = await newGetClient(
+      clusterUri,
+      createServerTokenProvider(),
+    );
     await getDatabasesOnCluster(kustoClient);
 
     // Re-resolve schemas for any open documents whose connection comment
@@ -140,25 +153,14 @@ connection.onRequest(
   "kuskus.addConnection",
   async ({
     clusterUri,
-    tenantId,
     database,
   }: {
     clusterUri: string;
-    tenantId: string | undefined;
     database: string;
   }) => {
-    const kustoClient = await getKustoClient(
+    const kustoClient = await newGetClient(
       clusterUri,
-      tenantId,
-      (tokenResponse: TokenResponse) => {
-        connection.sendRequest("kuskus.addConnection.auth", {
-          clusterUri,
-          tenantId,
-          database,
-          verificationUrl: tokenResponse.verificationUrl,
-          verificationCode: tokenResponse.userCode,
-        });
-      },
+      createServerTokenProvider(),
     );
 
     try {
@@ -167,7 +169,7 @@ connection.onRequest(
         "kuskus.addConnection.auth.complete.success",
         {
           clusterUri,
-          tenantId,
+          tenantId: "",
           database,
         },
       );
@@ -189,7 +191,7 @@ connection.onRequest(
       }
       connection.sendNotification("kuskus.addConnection.auth.complete.error", {
         clusterUri,
-        tenantId,
+        tenantId: "",
         database,
         errorMessage,
       });
@@ -264,17 +266,18 @@ connection.onNotification(
   async ({
     clusterUri,
     databaseName,
-    accessToken,
   }: {
     clusterUri: string;
     databaseName: string;
-    accessToken: string;
   }) => {
     try {
       connection.console.log(
         `Loading symbols for ${clusterUri}/${databaseName}...`,
       );
-      const kustoClient = await newGetClient(clusterUri, accessToken);
+      const kustoClient = await newGetClient(
+        clusterUri,
+        createServerTokenProvider(),
+      );
       const newState = await getSymbolsOnCluster(kustoClient, databaseName);
       if (newState) {
         kustoGlobalState = newState;

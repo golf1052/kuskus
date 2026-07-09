@@ -9,11 +9,12 @@ vi.mock("azure-kusto-data", () => {
   return {
     Client: MockKustoClient,
     KustoConnectionStringBuilder: {
-      withAccessToken: vi.fn().mockReturnValue({}),
-      withAadDeviceAuthentication: vi.fn().mockReturnValue({}),
+      withTokenProvider: vi.fn().mockReturnValue({}),
     },
   };
 });
+
+const mockTokenProvider = () => Promise.resolve("mock-token");
 
 describe("kustoConnection", () => {
   beforeEach(() => {
@@ -22,23 +23,23 @@ describe("kustoConnection", () => {
   });
 
   describe("newGetClient", () => {
-    it("should create a new client with access token", async () => {
+    it("should create a new client with token provider", async () => {
       const { newGetClient } = await import("../kustoConnection.js");
 
       const client = await newGetClient(
         "https://test.kusto.windows.net",
-        "test-token",
+        mockTokenProvider,
       );
 
       expect(client).toBeDefined();
     });
 
-    it("should throw if no access token for new cluster", async () => {
+    it("should throw if no token provider for new cluster", async () => {
       const { newGetClient } = await import("../kustoConnection.js");
 
       await expect(
         newGetClient("https://test.kusto.windows.net"),
-      ).rejects.toThrow("Access token is required");
+      ).rejects.toThrow("Token provider is required");
     });
 
     it("should return cached client on second call", async () => {
@@ -46,7 +47,7 @@ describe("kustoConnection", () => {
 
       const client1 = await newGetClient(
         "https://test.kusto.windows.net",
-        "token",
+        mockTokenProvider,
       );
       const client2 = await newGetClient("https://test.kusto.windows.net");
 
@@ -58,63 +59,14 @@ describe("kustoConnection", () => {
 
       const client1 = await newGetClient(
         "https://cluster1.kusto.windows.net",
-        "token1",
+        mockTokenProvider,
       );
       const client2 = await newGetClient(
         "https://cluster2.kusto.windows.net",
-        "token2",
+        mockTokenProvider,
       );
 
       expect(client1).not.toBe(client2);
-    });
-  });
-
-  describe("getClient", () => {
-    it("should create a new client with device auth callback", async () => {
-      const { getClient } = await import("../kustoConnection.js");
-      const authCallback = vi.fn();
-
-      const client = await getClient(
-        "https://test.kusto.windows.net",
-        "tenant-id",
-        authCallback,
-      );
-
-      expect(client).toBeDefined();
-    });
-
-    it("should return cached client on second call", async () => {
-      const { getClient } = await import("../kustoConnection.js");
-      const authCallback = vi.fn();
-
-      const client1 = await getClient(
-        "https://test.kusto.windows.net",
-        "tenant-id",
-        authCallback,
-      );
-      const client2 = await getClient(
-        "https://test.kusto.windows.net",
-        "tenant-id",
-        authCallback,
-      );
-
-      expect(client1).toBe(client2);
-    });
-
-    it("should treat empty tenantId as undefined", async () => {
-      const { KustoConnectionStringBuilder } = await import("azure-kusto-data");
-      const { getClient } = await import("../kustoConnection.js");
-      const authCallback = vi.fn();
-
-      await getClient("https://test.kusto.windows.net", "", authCallback);
-
-      expect(
-        KustoConnectionStringBuilder.withAadDeviceAuthentication,
-      ).toHaveBeenCalledWith(
-        "https://test.kusto.windows.net",
-        undefined,
-        expect.any(Function),
-      );
     });
   });
 
@@ -133,7 +85,7 @@ describe("kustoConnection", () => {
         "../kustoConnection.js"
       );
 
-      await newGetClient("https://test.kusto.windows.net", "token");
+      await newGetClient("https://test.kusto.windows.net", mockTokenProvider);
 
       const result = getFirstOrDefaultClient();
 

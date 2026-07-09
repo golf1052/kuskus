@@ -52,7 +52,7 @@ vi.mock("azure-kusto-data", () => {
       return { close: mockClose };
     }),
     KustoConnectionStringBuilder: {
-      withAccessToken: vi.fn().mockReturnValue({}),
+      withTokenProvider: vi.fn().mockReturnValue({}),
     },
   };
 });
@@ -69,6 +69,8 @@ import {
 } from "../../cluster-view/viewProvider.js";
 import * as vscode from "vscode";
 
+const mockTokenProvider = () => Promise.resolve("mock-token");
+
 describe("ClusterViewProvider", () => {
   let provider: ClusterViewProvider;
 
@@ -80,7 +82,7 @@ describe("ClusterViewProvider", () => {
 
   describe("addCluster", () => {
     it("should add a cluster and fire tree data change", () => {
-      provider.addCluster("https://test.kusto.windows.net", "test-token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
 
       expect(provider.getConnectedClusterUris()).toEqual([
         "https://test.kusto.windows.net",
@@ -88,8 +90,8 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should not duplicate an existing cluster", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token1");
-      provider.addCluster("https://test.kusto.windows.net", "token2");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
 
       expect(provider.getConnectedClusterUris()).toEqual([
         "https://test.kusto.windows.net",
@@ -97,8 +99,14 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should support multiple clusters", () => {
-      provider.addCluster("https://cluster1.kusto.windows.net", "token1");
-      provider.addCluster("https://cluster2.kusto.windows.net", "token2");
+      provider.addCluster(
+        "https://cluster1.kusto.windows.net",
+        mockTokenProvider,
+      );
+      provider.addCluster(
+        "https://cluster2.kusto.windows.net",
+        mockTokenProvider,
+      );
 
       expect(provider.getConnectedClusterUris()).toHaveLength(2);
     });
@@ -106,7 +114,7 @@ describe("ClusterViewProvider", () => {
 
   describe("removeCluster", () => {
     it("should close the KustoClient when removing a cluster", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       provider.removeCluster("https://test.kusto.windows.net");
 
       expect(mockClose).toHaveBeenCalledOnce();
@@ -120,14 +128,14 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should remove a cluster", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       provider.removeCluster("https://test.kusto.windows.net");
 
       expect(provider.getConnectedClusterUris()).toEqual([]);
     });
 
     it("should clear active database if active cluster is removed", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       provider.setActiveDatabase("https://test.kusto.windows.net", "mydb");
 
       expect(provider.activeClusterUri).toBe("https://test.kusto.windows.net");
@@ -140,8 +148,14 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should not clear active database if a different cluster is removed", () => {
-      provider.addCluster("https://cluster1.kusto.windows.net", "token1");
-      provider.addCluster("https://cluster2.kusto.windows.net", "token2");
+      provider.addCluster(
+        "https://cluster1.kusto.windows.net",
+        mockTokenProvider,
+      );
+      provider.addCluster(
+        "https://cluster2.kusto.windows.net",
+        mockTokenProvider,
+      );
       provider.setActiveDatabase("https://cluster1.kusto.windows.net", "mydb");
 
       provider.removeCluster("https://cluster2.kusto.windows.net");
@@ -180,8 +194,22 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should return the client for the active cluster", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       provider.setActiveDatabase("https://test.kusto.windows.net", "mydb");
+      expect(provider.getActiveClient()).toBeDefined();
+    });
+
+    it("should return the client when the active cluster URI differs only by a trailing slash", () => {
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
+      // Active database set with a trailing slash (e.g. from an LM tool) while
+      // the client was stored under the non-trailing-slash key.
+      provider.setActiveDatabase("https://test.kusto.windows.net/", "mydb");
+      expect(provider.getActiveClient()).toBeDefined();
+    });
+
+    it("should return the client when the active cluster URI differs only by casing", () => {
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
+      provider.setActiveDatabase("https://TEST.kusto.windows.net", "mydb");
       expect(provider.getActiveClient()).toBeDefined();
     });
   });
@@ -194,14 +222,14 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should return the client for a connected cluster", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       expect(
         provider.getClient("https://test.kusto.windows.net"),
       ).toBeDefined();
     });
 
     it("should return undefined after cluster is removed", () => {
-      provider.addCluster("https://test.kusto.windows.net", "token");
+      provider.addCluster("https://test.kusto.windows.net", mockTokenProvider);
       provider.removeCluster("https://test.kusto.windows.net");
       expect(
         provider.getClient("https://test.kusto.windows.net"),
@@ -230,8 +258,14 @@ describe("ClusterViewProvider", () => {
     });
 
     it("should return cluster items for connected clusters", async () => {
-      provider.addCluster("https://cluster1.kusto.windows.net", "token1");
-      provider.addCluster("https://cluster2.kusto.windows.net", "token2");
+      provider.addCluster(
+        "https://cluster1.kusto.windows.net",
+        mockTokenProvider,
+      );
+      provider.addCluster(
+        "https://cluster2.kusto.windows.net",
+        mockTokenProvider,
+      );
 
       const children = await provider.getChildren(undefined);
 

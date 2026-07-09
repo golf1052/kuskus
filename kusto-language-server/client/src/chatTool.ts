@@ -69,6 +69,26 @@ export interface QueryResultsStoreAccessor {
 
 const MAX_RESULT_ROWS = 500;
 
+/**
+ * Heuristic: does this error message look like an authentication/token problem?
+ * Used to attach a re-auth hint to LM tool failures so the model (and the user
+ * reading the log) can distinguish an expired token from a genuine query error.
+ */
+function isLikelyAuthError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("token") ||
+    m.includes("authentication") ||
+    m.includes("unauthorized") ||
+    m.includes("401") ||
+    m.includes("aadsts") ||
+    m.includes("expired") ||
+    m.includes("credential") ||
+    m.includes("sign in") ||
+    m.includes("login")
+  );
+}
+
 export class RunKustoQueryTool
   implements vscode.LanguageModelTool<IRunKustoQueryParameters>
 {
@@ -104,6 +124,13 @@ export class RunKustoQueryTool
     const database = this.connection.activeDatabaseName;
 
     if (!client || !database) {
+      logError(
+        `[LM Tool] run_query aborted: no active database (activeClusterUri=${
+          this.connection.activeClusterUri ?? "none"
+        }, activeDatabaseName=${
+          this.connection.activeDatabaseName ?? "none"
+        }, client=${client ? "resolved" : "undefined"})`,
+      );
       throw new Error(
         "No active Kusto database is configured. Ask the user to connect to a cluster and set an active database in the Kusto Explorer panel first.",
       );
@@ -128,7 +155,16 @@ export class RunKustoQueryTool
       if (result.fullError) {
         logError(`[LM Tool] Full error details:\n${result.fullError}`);
       }
-      throw new Error(`Kusto query failed: ${result.error}`);
+      const authHint =
+        result.error && isLikelyAuthError(result.error)
+          ? " This looks like an authentication/token problem — the access token may have expired. Check the [Kuskus] output channel (enable kuskusLanguageServer.verboseLogging for details) and retry; if it persists, sign out and back in from the Kusto Explorer."
+          : "";
+      if (authHint) {
+        logError(
+          "[LM Tool] Query failure appears authentication-related; token may have expired",
+        );
+      }
+      throw new Error(`Kusto query failed: ${result.error}.${authHint}`);
     }
 
     log(`[LM Tool] Query returned ${result.rowCount} row(s)`);
@@ -265,6 +301,13 @@ export class ListTablesTool
     const database = this.connection.activeDatabaseName;
 
     if (!client || !database) {
+      logError(
+        `[LM Tool] list_tables aborted: no active database (activeClusterUri=${
+          this.connection.activeClusterUri ?? "none"
+        }, activeDatabaseName=${
+          this.connection.activeDatabaseName ?? "none"
+        }, client=${client ? "resolved" : "undefined"})`,
+      );
       throw new Error(
         "No active Kusto database is configured. Ask the user to connect to a cluster and set an active database in the Kusto Explorer panel first.",
       );
@@ -327,6 +370,13 @@ export class GetTableSchemaTool
     const database = this.connection.activeDatabaseName;
 
     if (!client || !database) {
+      logError(
+        `[LM Tool] get_table_schema aborted: no active database (activeClusterUri=${
+          this.connection.activeClusterUri ?? "none"
+        }, activeDatabaseName=${
+          this.connection.activeDatabaseName ?? "none"
+        }, client=${client ? "resolved" : "undefined"})`,
+      );
       throw new Error(
         "No active Kusto database is configured. Ask the user to connect to a cluster and set an active database in the Kusto Explorer panel first.",
       );
